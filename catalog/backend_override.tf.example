@@ -1,0 +1,6 @@
+# To try the catalog without access to the GCS bucket, copy this file to backend_override.tf.
+# Terraform then keeps the state in terraform.tfstate on your machine.
+# Also set gcp_project_id = null, or set it to your own project.
+terraform {
+  backend "local" {}
+}

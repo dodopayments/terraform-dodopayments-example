@@ -1,0 +1,83 @@
+name: plan
+
+on:
+  pull_request:
+    paths:
+      - "catalog/**"
+      - "scripts/**"
+      - ".github/actions/**"
+      - ".github/workflows/plan.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    # A pull request from a fork gets no secrets and no OIDC token.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    env:
+      DODO_PAYMENTS_API_KEY: ${{ secrets.DODO_PAYMENTS_API_KEY }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform
+        with:
+          state-prefix: catalog/main
+          workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      # -lock=false: a plan does not write the state, so it must not wait for an apply on main.
+      - name: terraform plan
+        working-directory: catalog
+        run: terraform plan -input=false -lock=false -no-color -out=tfplan | tee plan.txt
+
+      - name: Summarize the plan
+        id: summary
+        working-directory: catalog
+        run: |
+          {
+            echo "<!-- terraform-plan -->"
+            echo "### Terraform plan for \`catalog/\`"
+            echo
+            ../scripts/plan-summary.sh tfplan
+            echo
+            echo "<details><summary>Full plan output</summary>"
+            echo
+            echo '```'
+            # A PR comment has a maximum of 65,536 characters.
+            sed -n '/Terraform will perform\|No changes\./,$p' plan.txt | tail -c 50000
+            echo '```'
+            echo "</details>"
+            echo
+            echo "Commit ${GITHUB_SHA::7}. A merge to \`main\` applies this change."
+          } > summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on the pull request
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('catalog/summary.md', 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const prior = comments.find(c => c.user.type === 'Bot' && c.body.startsWith('<!-- terraform-plan -->'));
+            if (prior) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: prior.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }

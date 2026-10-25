@@ -1,0 +1,114 @@
+name: drift
+
+# Each night, compare the catalog in Dodo Payments with the configuration on main.
+# A change in the dashboard opens an issue. The next clean run closes it.
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-catalog
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    env:
+      DODO_PAYMENTS_API_KEY: ${{ secrets.DODO_PAYMENTS_API_KEY }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform
+        with:
+          state-prefix: catalog/main
+          workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: terraform plan
+        id: plan
+        working-directory: catalog
+        run: |
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode -out=tfplan > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          if [ "$code" -eq 1 ]; then
+            echo "::error::terraform plan failed."
+            exit 1
+          fi
+          drift=false
+          [ "$code" -eq 2 ] && drift=true
+          checks=false
+          grep -q "Check block assertion failed" plan.txt && checks=true
+          echo "drift=$drift" >> "$GITHUB_OUTPUT"
+          echo "checks=$checks" >> "$GITHUB_OUTPUT"
+
+      - name: Write the report
+        working-directory: catalog
+        env:
+          DRIFT: ${{ steps.plan.outputs.drift }}
+          CHECKS: ${{ steps.plan.outputs.checks }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "<!-- terraform-drift -->"
+            echo "The nightly drift run found a difference between Dodo Payments and \`main\`. Run: $RUN_URL"
+            echo
+            if [ "$DRIFT" = true ]; then
+              echo "### Drift"
+              echo
+              ../scripts/plan-summary.sh tfplan
+              echo
+              echo "To accept the change, update the configuration in a pull request. To undo the change, run the **apply** workflow."
+              echo
+            fi
+            if [ "$CHECKS" = true ]; then
+              echo "### Failed checks"
+              echo
+              echo '```'
+              grep -A4 "Check block assertion failed" plan.txt | sed 's/^│ //'
+              echo '```'
+            fi
+          } > report.md
+          if [ "$DRIFT" = true ] || [ "$CHECKS" = true ]; then
+            cat report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No drift. All checks pass." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Open, update or close the drift issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DRIFT: ${{ steps.plan.outputs.drift }}
+          CHECKS: ${{ steps.plan.outputs.checks }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const found = process.env.DRIFT === 'true' || process.env.CHECKS === 'true';
+            const open = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'open', labels: 'drift' });
+            const issue = open.find(i => !i.pull_request);
+            if (found) {
+              const body = fs.readFileSync('catalog/report.md', 'utf8');
+              if (issue) {
+                await github.rest.issues.update({ owner, repo, issue_number: issue.number, body });
+              } else {
+                await github.rest.issues.create({ owner, repo, title: 'Catalog drift detected', body, labels: ['drift'] });
+              }
+            } else if (issue) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body: 'The nightly run found no drift. Closing.' });
+              await github.rest.issues.update({ owner, repo, issue_number: issue.number, state: 'closed', state_reason: 'completed' });
+            }
