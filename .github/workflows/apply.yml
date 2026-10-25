@@ -1,0 +1,91 @@
+name: apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "catalog/**"
+      - "scripts/**"
+      - ".github/actions/**"
+      - ".github/workflows/apply.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+# Never cancel an apply. A second apply waits for the first.
+concurrency:
+  group: apply-catalog
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: catalog
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DODO_PAYMENTS_API_KEY: ${{ secrets.DODO_PAYMENTS_API_KEY }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/terraform
+        with:
+          state-prefix: catalog/main
+          workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      # Plan again on main and apply that plan file, so that the apply does only what this summary shows.
+      - name: terraform plan
+        working-directory: catalog
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      - name: Summarize the plan
+        working-directory: catalog
+        run: |
+          {
+            echo "### Apply on \`main\` (${GITHUB_SHA::7})"
+            echo
+            ../scripts/plan-summary.sh tfplan
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: terraform apply
+        working-directory: catalog
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Confirm that the catalog has no drift
+        working-directory: catalog
+        run: |
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode > replan.txt
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            cat replan.txt
+            echo "::error::A plan after the apply is not empty (exit code $code)."
+            exit 1
+          fi
+          echo "A plan after the apply is empty." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Outputs
+        working-directory: catalog
+        run: |
+          {
+            echo
+            echo "<details><summary>Catalog IDs</summary>"
+            echo
+            echo '```json'
+            terraform output -json | jq 'with_entries(.value = .value.value)'
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,146 @@
+name: e2e
+
+# Each night, build a full copy of the catalog from nothing, use it, and destroy it.
+# The copy has its own state and its own name prefix, so it does not touch the live catalog.
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    # The write identity accepts a token from refs/heads/main only.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        terraform: ["1.12.2", "1.17.0"]
+      # Two copies at the same time can hit the API rate limit.
+      max-parallel: 1
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    env:
+      DODO_PAYMENTS_API_KEY: ${{ secrets.DODO_PAYMENTS_API_KEY }}
+      TF_IN_AUTOMATION: "1"
+      RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Names for this run
+        id: names
+        run: |
+          short="$(printf '%s' "$RUN_KEY" | sha256sum | cut -c1-6)"
+          {
+            echo "state_prefix=e2e/${RUN_KEY}"
+            echo "TF_VAR_resource_prefix=e2e-${short}"
+            echo "TF_VAR_discount_code_prefix=E$(printf '%s' "$short" | tr 'a-f' 'A-F')"
+          } | tee -a "$GITHUB_OUTPUT" | grep TF_VAR_ >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/terraform
+        with:
+          state-prefix: ${{ steps.names.outputs.state_prefix }}
+          workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          terraform-version: ${{ matrix.terraform }}
+
+      - name: Create the catalog
+        working-directory: catalog
+        run: terraform apply -input=false -no-color -auto-approve
+
+      - name: A second plan is empty
+        working-directory: catalog
+        run: terraform plan -input=false -no-color -detailed-exitcode
+
+      - name: The webhook secret is in Secret Manager and not in the state
+        working-directory: catalog
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          secret="$(terraform output -raw webhook_secret_id)"
+          value="$(gcloud secrets versions access latest --secret="$secret" --project="$GCP_PROJECT_ID")"
+          echo "::add-mask::$value"
+          case "$value" in whsec_*) echo "Secret Manager has the signing secret." ;; *) echo "::error::Unexpected secret format."; exit 1 ;; esac
+          if terraform state pull | grep -qF "$value"; then
+            echo "::error::The webhook secret is in the state."
+            exit 1
+          fi
+          echo "The state does not contain the signing secret."
+
+      - name: Customers can buy from the catalog
+        working-directory: catalog
+        run: |
+          plan_id="$(terraform output -json plan_product_ids | jq -r .pro_annual)"
+          code="$(terraform output -json discount_codes | jq -r .launch)"
+          collection="$(terraform output -raw plan_collection_id)"
+          checkout() {
+            curl -sS --fail-with-body https://test.dodopayments.com/checkouts \
+              -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" -H 'Content-Type: application/json' -d "$1"
+          }
+          # An annual plan with the launch discount.
+          checkout "$(jq -n --arg p "$plan_id" --arg c "$code" '{product_cart: [{product_id: $p, quantity: 1}], discount_codes: [$c]}')" \
+            | jq -e '.checkout_url | startswith("https://")' > /dev/null
+          echo "Checkout for the Pro annual plan with $code: OK"
+          # The plan picker.
+          checkout "$(jq -n --arg c "$collection" '{product_cart: [], product_collection_id: $c}')" \
+            | jq -e '.checkout_url | startswith("https://")' > /dev/null
+          echo "Checkout for the plan collection: OK"
+
+      - name: terraform query lists the catalog
+        if: matrix.terraform == '1.17.0'
+        working-directory: import
+        run: |
+          terraform init -input=false
+          terraform query -no-color | tee query.txt
+          grep -q '^list\.dodopayments_product\.subscriptions' query.txt
+
+      - name: Destroy the catalog
+        id: destroy
+        if: always() && steps.names.outcome == 'success'
+        working-directory: catalog
+        run: terraform destroy -input=false -no-color -auto-approve
+
+      # The bucket deletes an e2e state after 14 days. Clean up before then, or the objects stay in test mode.
+      - name: Open an issue for a failed destroy
+        if: failure() && steps.destroy.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          STATE_PREFIX: ${{ steps.names.outputs.state_prefix }}
+          RESOURCE_PREFIX: ${{ env.TF_VAR_resource_prefix }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner, repo,
+              title: `e2e: destroy failed for ${process.env.RESOURCE_PREFIX}`,
+              labels: ['e2e-cleanup'],
+              body: [
+                `The nightly e2e run could not destroy its copy of the catalog: ${run}`,
+                '',
+                `State: \`gs://dodopayments-tf-example-tfstate/${process.env.STATE_PREFIX}\`. The bucket deletes it after 14 days.`,
+                '',
+                'To clean up, run this in `catalog/` before then:',
+                '',
+                '```bash',
+                `terraform init -backend-config=prefix=${process.env.STATE_PREFIX}`,
+                `terraform destroy -var resource_prefix=${process.env.RESOURCE_PREFIX}`,
+                '```',
+              ].join('\n'),
+            });
