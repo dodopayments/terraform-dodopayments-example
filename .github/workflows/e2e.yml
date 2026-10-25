@@ -67,9 +67,11 @@ jobs:
 
       - name: The webhook secret is in Secret Manager and not in the state
         working-directory: catalog
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
         run: |
-          secret="$(terraform output -raw webhook_secret_name)"
-          value="$(gcloud secrets versions access latest --secret="$secret" --project="${{ vars.GCP_PROJECT_ID }}")"
+          secret="$(terraform output -raw webhook_secret_id)"
+          value="$(gcloud secrets versions access latest --secret="$secret" --project="$GCP_PROJECT_ID")"
           echo "::add-mask::$value"
           case "$value" in whsec_*) echo "Secret Manager has the signing secret." ;; *) echo "::error::Unexpected secret format."; exit 1 ;; esac
           if terraform state pull | grep -qF "$value"; then

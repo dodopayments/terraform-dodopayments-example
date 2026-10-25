@@ -46,7 +46,7 @@ output "webhook_id" {
   value = dodopayments_webhook.billing.id
 }
 
-output "webhook_secret_name" {
+output "webhook_secret_id" {
   description = "The Secret Manager secret that holds the webhook signing secret."
-  value       = one(google_secret_manager_secret.webhook_signing[*].name)
+  value       = one(google_secret_manager_secret.webhook_signing[*].secret_id)
 }
