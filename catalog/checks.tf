@@ -18,3 +18,15 @@ check "credit_pack_volume_pricing" {
     error_message = "A larger credit pack must cost less for each credit than a smaller pack."
   }
 }
+
+check "localized_annual_discount" {
+  assert {
+    condition = alltrue(flatten([
+      for tier in local.tier_order : [
+        for currency, amount in try(local.localized["${tier}_annual"], {}) :
+        amount <= floor(local.localized["${tier}_monthly"][currency] * 12 * 0.9)
+      ]
+    ]))
+    error_message = "A localized annual price must save at least 10% on 12 localized monthly payments."
+  }
+}

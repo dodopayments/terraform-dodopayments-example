@@ -20,8 +20,10 @@ resource "dodopayments_credit_entitlement" "ai_credits" {
   unit        = "credits"
   precision   = 0
 
+  # Overage price in dollars for each credit. It is a little more than the smallest pack ($0.0018 a credit).
+  # overage_limit caps the overage at 250,000 credits, which is $500 in a billing period.
   currency       = "USD"
-  price_per_unit = "1.5"
+  price_per_unit = "0.002"
 
   expires_after_days = 90
 

@@ -49,9 +49,17 @@ scripts/        plan summary for pull requests
 | `plan` | Pull request | Plans against the live catalog and puts a summary table in a comment |
 | `apply` | Merge to `main` | Plans again, applies that plan file, then confirms that a new plan is empty |
 | `drift` | Each night, 02:30 UTC | Opens a `drift` issue if the dashboard differs from `main` or a check fails. Closes it when the catalog matches again |
-| `e2e` | Each night, 03:30 UTC | Builds a separate copy of the catalog on Terraform 1.12 and 1.17, confirms an empty second plan, makes two checkouts, runs `terraform query`, and destroys the copy |
+| `e2e` | Each night, 03:30 UTC, from `main` | Builds a separate copy of the catalog on Terraform 1.12 and 1.17, confirms an empty second plan, makes two checkouts, runs `terraform query`, and destroys the copy |
 
 The workflows get GCP access through Workload Identity Federation. There is no service account key.
+There are two identities:
+
+| Identity | Used by | Access |
+|---|---|---|
+| `terraform-plan` | `plan`, `drift` | Read the state and the secret metadata. Any ref of this repository |
+| `terraform-ci` | `apply`, `e2e` | Write the state and Secret Manager. A token from `refs/heads/main` only |
+
+So a pull request can plan, but only a merge can change the catalog.
 The Dodo Payments API key is the `DODO_PAYMENTS_API_KEY` repository secret.
 
 ## Try it
@@ -89,25 +97,36 @@ gcloud storage buckets create gs://$P-tfstate --project=$P --location=asia-south
 gcloud storage buckets update gs://$P-tfstate --versioning
 # The lifecycle rules delete e2e states after 14 days, and old state versions after 30 days.
 
+# Write identity, for apply and e2e.
 gcloud iam service-accounts create terraform-ci --project=$P
 gcloud storage buckets add-iam-policy-binding gs://$P-tfstate \
   --member=serviceAccount:terraform-ci@$P.iam.gserviceaccount.com --role=roles/storage.objectAdmin
 gcloud projects add-iam-policy-binding $P \
   --member=serviceAccount:terraform-ci@$P.iam.gserviceaccount.com --role=roles/secretmanager.admin
 
+# Read-only identity, for plan and drift.
+gcloud iam service-accounts create terraform-plan --project=$P
+gcloud storage buckets add-iam-policy-binding gs://$P-tfstate \
+  --member=serviceAccount:terraform-plan@$P.iam.gserviceaccount.com --role=roles/storage.objectViewer
+gcloud projects add-iam-policy-binding $P \
+  --member=serviceAccount:terraform-plan@$P.iam.gserviceaccount.com --role=roles/secretmanager.viewer
+
 # Only this repository can get a token. The condition uses the numeric IDs, because a deleted name can be registered again.
 gcloud iam workload-identity-pools create github --project=$P --location=global
 gcloud iam workload-identity-pools providers create-oidc terraform-example --project=$P \
   --location=global --workload-identity-pool=github \
   --issuer-uri=https://token.actions.githubusercontent.com \
-  --attribute-mapping=google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id \
+  --attribute-mapping=google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id,attribute.ref=assertion.ref \
   --attribute-condition="assertion.repository_owner_id == '168640166' && assertion.repository_id == '1433452721'"
+POOL=principalSet://iam.googleapis.com/projects/887237639149/locations/global/workloadIdentityPools/github
+gcloud iam service-accounts add-iam-policy-binding terraform-plan@$P.iam.gserviceaccount.com \
+  --project=$P --role=roles/iam.workloadIdentityUser --member=$POOL/attribute.repository_id/1433452721
+# The provider condition admits only this repository, so the ref binding cannot match another repository.
 gcloud iam service-accounts add-iam-policy-binding terraform-ci@$P.iam.gserviceaccount.com \
-  --project=$P --role=roles/iam.workloadIdentityUser \
-  --member=principalSet://iam.googleapis.com/projects/887237639149/locations/global/workloadIdentityPools/github/attribute.repository_id/1433452721
+  --project=$P --role=roles/iam.workloadIdentityUser --member=$POOL/attribute.ref/refs/heads/main
 ```
 
-A pull request from a fork gets no secret and no token, so the `plan` and `e2e` jobs do not run for it.
+A pull request from a fork gets no secret and no token, so the `plan` job does not run for it.
 
 ## License
 

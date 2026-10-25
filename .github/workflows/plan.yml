@@ -8,6 +8,10 @@ on:
       - ".github/actions/**"
       - ".github/workflows/plan.yml"
 
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
 
@@ -37,7 +41,8 @@ jobs:
         with:
           state-prefix: catalog/main
           workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          # Read-only: it can read the state and the secret metadata, and cannot write either.
+          service-account: ${{ vars.GCP_PLAN_SERVICE_ACCOUNT }}
 
       # -lock=false: a plan does not write the state, so it must not wait for an apply on main.
       - name: terraform plan

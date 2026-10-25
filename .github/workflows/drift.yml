@@ -7,6 +7,10 @@ on:
     - cron: "30 2 * * *"
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
 
@@ -34,14 +38,14 @@ jobs:
         with:
           state-prefix: catalog/main
           workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          service-account: ${{ vars.GCP_PLAN_SERVICE_ACCOUNT }}
 
       - name: terraform plan
         id: plan
         working-directory: catalog
         run: |
           set +e
-          terraform plan -input=false -no-color -detailed-exitcode -out=tfplan > plan.txt 2>&1
+          terraform plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan > plan.txt 2>&1
           code=$?
           set -e
           cat plan.txt

@@ -26,6 +26,8 @@ resource "dodopayments_product" "plan" {
     credits_amount                = tostring(each.value.credits)
     low_balance_threshold_percent = 20
     trial_credits                 = each.value.trial_days > 0 ? "500" : null
+    # An annual plan grants 12 months of credits at the start of the year, so they must last the year.
+    expires_after_days = each.value.cycle == "annual" ? 365 : 90
   }]
 
   entitlements = [for f in each.value.features : { entitlement_id = dodopayments_entitlement.feature[f].id }]
