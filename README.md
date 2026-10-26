@@ -81,6 +81,12 @@ terraform destroy -var gcp_project_id=null -var resource_prefix=$USER
 When you delete a product, meter, add-on, credit entitlement or collection, Terraform archives it. The API cannot delete these objects.
 When you delete a discount or webhook, Terraform deletes it.
 
+### With OpenTofu
+
+The provider is also in the [OpenTofu Registry](https://search.opentofu.org/provider/dodopayments/dodopayments/latest).
+The catalog works with OpenTofu 1.12 or later: run the same commands with `tofu` in place of `terraform`.
+OpenTofu has no `terraform query`, so `import/` needs Terraform 1.14 or later. The workflows use Terraform.
+
 ## GCP setup
 
 The state and the webhook secret are in the GCP project `dodopayments-tf-example`, which has nothing else in it. It was set up with these commands:
