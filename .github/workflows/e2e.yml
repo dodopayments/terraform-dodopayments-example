@@ -35,7 +35,7 @@ jobs:
       id-token: write
       issues: write
     env:
-      DODO_PAYMENTS_API_KEY: ${{ secrets.DODO_PAYMENTS_API_KEY }}
+      DODO_PAYMENTS_IDENTITY_PROVIDER_ID: ${{ vars.DODO_PAYMENTS_IDENTITY_PROVIDER_ID }}
       TF_IN_AUTOMATION: "1"
       RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
     steps:
@@ -89,9 +89,25 @@ jobs:
           plan_id="$(terraform output -json plan_product_ids | jq -r .pro_annual)"
           code="$(terraform output -json discount_codes | jq -r .launch)"
           collection="$(terraform output -raw plan_collection_id)"
+          # Exchange a GitHub OIDC token for a short-lived Dodo token, as the provider does.
+          jwt="$(curl -sS --fail -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://test.dodopayments.com" | jq -r .value)"
+          echo "::add-mask::$jwt"
+          response="$(curl -sS https://test.dodopayments.com/workload-identity/token \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --arg t "$jwt" --arg p "$DODO_PAYMENTS_IDENTITY_PROVIDER_ID" '{
+              grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+              subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+              subject_token: $t, identity_provider_id: $p}')")"
+          token="$(jq -r '.access_token // empty' <<< "$response")"
+          if [ -z "$token" ]; then
+            echo "::error::The token exchange failed: $(jq -r '"\(.error): \(.error_description)"' <<< "$response" 2>/dev/null || echo "$response")"
+            exit 1
+          fi
+          echo "::add-mask::$token"
           checkout() {
             curl -sS --fail-with-body https://test.dodopayments.com/checkouts \
-              -H "Authorization: Bearer $DODO_PAYMENTS_API_KEY" -H 'Content-Type: application/json' -d "$1"
+              -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$1"
           }
           # An annual plan with the launch discount.
           checkout "$(jq -n --arg p "$plan_id" --arg c "$code" '{product_cart: [{product_id: $p, quantity: 1}], discount_codes: [$c]}')" \

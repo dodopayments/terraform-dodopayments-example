@@ -60,7 +60,17 @@ There are two identities:
 | `terraform-ci` | `apply`, `e2e` | Write the state and Secret Manager. A token from `refs/heads/main` only |
 
 So a pull request can plan, but only a merge can change the catalog.
-The Dodo Payments API key is the `DODO_PAYMENTS_API_KEY` repository secret.
+The workflows get Dodo Payments access the same way, with no API key. The provider exchanges the GitHub OIDC token for a short-lived token of the Dodo workload identity provider in the `DODO_PAYMENTS_IDENTITY_PROVIDER_ID` repository variable.
+Each workflow has its own mapping, keyed on the `job_workflow_ref` claim:
+
+| Mapping | `job_workflow_ref` | Scopes |
+|---|---|---|
+| plan | `dodopayments/terraform-dodopayments-example/.github/workflows/plan.yml@*` | read |
+| drift | `dodopayments/terraform-dodopayments-example/.github/workflows/drift.yml@*` | read |
+| apply | `dodopayments/terraform-dodopayments-example/.github/workflows/apply.yml@refs/heads/main` | write |
+| e2e | `dodopayments/terraform-dodopayments-example/.github/workflows/e2e.yml@refs/heads/main` | write |
+
+Each mapping also pins `repository_id` to `1433452721`.
 
 ## Try it
 

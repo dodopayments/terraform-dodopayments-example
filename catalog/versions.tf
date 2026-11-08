@@ -4,7 +4,7 @@ terraform {
   required_providers {
     dodopayments = {
       source  = "dodopayments/dodopayments"
-      version = "~> 0.2.1"
+      version = "~> 0.3.2"
     }
     google = {
       source  = "hashicorp/google"
@@ -20,7 +20,8 @@ terraform {
   }
 }
 
-# The provider reads the API key from the DODO_PAYMENTS_API_KEY environment variable.
+# The provider reads DODO_PAYMENTS_API_KEY. If it is not set and DODO_PAYMENTS_IDENTITY_PROVIDER_ID
+# is set, the provider uses workload identity: CI needs no API key.
 provider "dodopayments" {
   environment = var.dodo_environment
 }
