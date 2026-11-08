@@ -11,7 +11,7 @@ terraform {
   required_providers {
     dodopayments = {
       source  = "dodopayments/dodopayments"
-      version = "~> 0.2.1"
+      version = "~> 0.3.2"
     }
   }
 }

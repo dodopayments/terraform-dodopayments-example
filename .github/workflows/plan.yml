@@ -30,7 +30,7 @@ jobs:
       id-token: write
       pull-requests: write
     env:
-      DODO_PAYMENTS_API_KEY: ${{ secrets.DODO_PAYMENTS_API_KEY }}
+      DODO_PAYMENTS_IDENTITY_PROVIDER_ID: ${{ vars.DODO_PAYMENTS_IDENTITY_PROVIDER_ID }}
       TF_IN_AUTOMATION: "1"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
