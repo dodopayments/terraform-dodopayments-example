@@ -92,12 +92,18 @@ jobs:
           # Exchange a GitHub OIDC token for a short-lived Dodo token, as the provider does.
           jwt="$(curl -sS --fail -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://test.dodopayments.com" | jq -r .value)"
-          token="$(curl -sS --fail-with-body https://test.dodopayments.com/workload-identity/token \
+          echo "::add-mask::$jwt"
+          response="$(curl -sS https://test.dodopayments.com/workload-identity/token \
             -H 'Content-Type: application/json' \
             -d "$(jq -n --arg t "$jwt" --arg p "$DODO_PAYMENTS_IDENTITY_PROVIDER_ID" '{
               grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
               subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
-              subject_token: $t, identity_provider_id: $p}')" | jq -r .access_token)"
+              subject_token: $t, identity_provider_id: $p}')")"
+          token="$(jq -r '.access_token // empty' <<< "$response")"
+          if [ -z "$token" ]; then
+            echo "::error::The token exchange failed: $(jq -r '"\(.error): \(.error_description)"' <<< "$response" 2>/dev/null || echo "$response")"
+            exit 1
+          fi
           echo "::add-mask::$token"
           checkout() {
             curl -sS --fail-with-body https://test.dodopayments.com/checkouts \
